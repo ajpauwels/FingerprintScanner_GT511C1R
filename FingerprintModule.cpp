@@ -191,7 +191,7 @@ bool FingerprintModule::enrollSequence(uint32_t id, writeFunc out) {
 	bool success = true;					// Indicates whether the enrollment was successful
 	bool done = false;						// Indicates whether or not to exit the state machine
 	ENROLL_STATE state = START;				// Stores the current state of the state machine
-	bool usingStream = (out != nullptr);	// True if an output function was given
+	bool usingStream = (out != 0x00);		// True if an output function was given
 
 	if (usingStream) {
 		out("Beginning enroll");
@@ -201,11 +201,17 @@ bool FingerprintModule::enrollSequence(uint32_t id, writeFunc out) {
 		switch (state) {
 			// Begin enrollment for the specified ID, end execution on error
 			case START:
-				if (startEnrollment(id)) {
-					state = REMOVE_FINGER;
-				} else {
+				// Error out if CMOS could not be turned off
+				if (!powerCMOS(false)) {
 					success = false;
 					done = true;
+				} else {
+					if (startEnrollment(id)) {
+						state = CAPTURE;
+					} else {
+						success = false;
+						done = true;
+					}
 				}
 				break;
 
@@ -220,27 +226,21 @@ bool FingerprintModule::enrollSequence(uint32_t id, writeFunc out) {
 				if (!powerCMOS(true)) {
 					success = false;
 					done = true;
-				}
-
-				// Try and capture a fingerprint, if comms have broke down return
-				if (captureFingerprint(true)) {
-					state = ENROLL;
 				} else {
-					if (mRespParam == NACK_COMM_ERR) {
-						success = false;
-						done = true;
+					// Try and capture a fingerprint, if comms have broke down return
+					if (captureFingerprint(true)) {
+						state = ENROLL;
+					} else {
+						if (mRespParam == NACK_COMM_ERR) {
+							success = false;
+							done = true;
+						}
 					}
 				}
 				break;
 
 			// Enroll a captured fingerprint
 			case ENROLL:
-				// Error out if CMOS won't turn off
-				if (!powerCMOS(false)) {
-					success = false;
-					done = true;
-				}
-
 				// Try and enroll, reset on failure
 				if (createEnrollmentTemplate()) {
 					if (mEnrollmentStage == 3) {
@@ -260,26 +260,56 @@ bool FingerprintModule::enrollSequence(uint32_t id, writeFunc out) {
 
 			// End the enrollment process
 			case COMPLETE:
+				// Blink 4 times to indicqte success; don't really care if this succeeded or not
+				powerCMOS(false);
+				delay(125);
+				powerCMOS(true);
+				delay(125);
+				powerCMOS(false);
+				delay(125);
+				powerCMOS(true);
+				delay(125);
+				powerCMOS(false);
+				delay(125);
+				powerCMOS(true);
+				delay(125);
+				powerCMOS(false);
+				delay(125);
+				powerCMOS(true);
+				delay(125);
+				powerCMOS(false);
 				done = true;
 				break;
 
 			// Used to ensure the user has removed his finger before another capture
 			case REMOVE_FINGER:
-				int i;
 				// Give user instruction to remove finger
 				if (usingStream) {
 					out("Remove finger");
 				}
 
-				for (i = 0; i < 5 && !isFingerPressed(); ++i);
+				// Error out if could not turn off CMOS
+				if (!powerCMOS(false)) {
+					success = false;
+					done = true;
+				} else {
+					// Wait 2 seconds for user to remove finger before checking
+					delay(2000);
 
-				// If the finger is not pressed, move on, however if there's a comm error, end execution
-				if (i == 5) {
-					if (mRespParam == NACK_FINGER_IS_NOT_PRESSED) {
-						state = CAPTURE;
-					} else {
+					// LED must be turned on to check if finger is pressed
+					if (!powerCMOS(true)) {
 						success = false;
 						done = true;
+					} else {
+						// If the finger isn't pressed, move on to capture, however if there was a comms error end sequence
+						if (!isFingerPressed()) {
+							if (mRespParam == NACK_FINGER_IS_NOT_PRESSED) {
+								state = CAPTURE;
+							} else {
+								success = false;
+								done = true;
+							}
+						}
 					}
 				}
 				break;
